@@ -55,4 +55,4 @@ for n in "${L2CPUS[@]:1}"; do
 done
 tmux set-option -t $SESSION remain-on-exit on > /dev/null
 echo "Guests booting in tmux session '$SESSION' (tmux attach -t $SESSION)."
-for n in "${L2CPUS[@]}"; do echo "  bh-x280-$n: ssh -p $((2222 + n + 4 * TTDEVICE)) -i $OUT/host_key debian@localhost"; done
+for n in "${L2CPUS[@]}"; do echo "  bh-x280-$n: ssh -p $((2222 + n + 4 * TTDEVICE)) -i mpi16/out/host_key debian@localhost"; done

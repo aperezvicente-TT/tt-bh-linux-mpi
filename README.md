@@ -1,3 +1,10 @@
+> [!NOTE]
+> **This fork adds [MPI across all 16 X280 cores](mpi16/README.md).** It boots one Linux guest
+> on each of Blackhole's four L2CPU tiles, links them with a host-relayed LAN, and runs Open MPI
+> with one rank per core. Setup, results and the host-tool changes are in [mpi16/README.md](mpi16/README.md).
+>
+> ![16 MPI ranks on Blackhole X280 cores](mpi16/docs/demo16.gif)
+
 ![Tenstorrent Blackhole P150](misc/P150.jpg)
 
 # Tenstorrent Blackhole P100/P150 Linux demo

@@ -2,9 +2,9 @@
 # Narrated demo: 16 MPI ranks on the 16 SiFive X280 cores of one Blackhole P150.
 # Boots the four L2CPU guests from cold, then drives guest bh-x280-0 over ssh.
 #   mpi16/demo16.sh              (record with: asciinema rec -i 2 -c mpi16/demo16.sh demo.cast)
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 TTDEVICE=${TTDEVICE:-0}
-SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -i out/host_key"
+SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -i mpi16/out/host_key"
 
 B=$'\e[1m'; G=$'\e[32m'; C=$'\e[36m'; Y=$'\e[33m'; R=$'\e[0m'
 step() { echo; echo "${B}${Y}## $*${R}"; sleep 1.5; }
@@ -14,7 +14,7 @@ type_cmd() {  # $1 prompt, $2 command
     local i; for ((i = 0; i < ${#2}; i++)); do printf "%s" "${2:i:1}"; sleep 0.02; done
     echo; sleep 0.4
 }
-host() { type_cmd "${G}host\$${R} " "$*"; bash -c "$*"; }
+host() { type_cmd "${G}host:tt-bh-linux\$${R} " "$*"; bash -c "$*"; }
 guest() {  # run on bh-x280-<n> (default 0)
     local n=0; [ "$1" = "-n" ] && { n=$2; shift 2; }
     type_cmd "${G}debian@bh-x280-$n${R}:${B}~\$${R} " "$*"
@@ -32,7 +32,7 @@ if tmux has-session -t mpi16 2>/dev/null; then
     for n in 0 1 2 3; do timeout 15 $SSH -p $((2222 + n + 4 * TTDEVICE)) debian@localhost 'sudo systemctl poweroff' >/dev/null 2>&1 & done; wait
     sleep 10; tmux kill-session -t mpi16
 fi
-host "./boot16.sh"
+host "mpi16/boot16.sh"
 printf "waiting for the four guests "
 for i in $(seq 1 60); do
     ok=0
@@ -45,7 +45,7 @@ $SSH -p $((2222 + 4 * TTDEVICE)) debian@localhost 'for h in bh-x280-0 bh-x280-1 
 
 step "2. Each guest is a 4-core SMP machine"
 for n in 0 1 2 3; do
-    guest -n $n 'echo "$(hostname): cpus $(cat /sys/devices/system/cpu/online), $(free -g | awk "/Mem/{print \$2+1}") GB, lan0 $(ip -br -4 addr show lan0 | awk "{print \$3}")"'
+    guest -n $n 'sh demo/sysinfo.sh'
 done
 note "L2CPU 0 and 1 each own a 4 GB DRAM tile; L2CPU 2 and 3 split one 4 GB tile."
 note "lan0 is a virtual Ethernet between the guests, relayed by the host over PCIe."

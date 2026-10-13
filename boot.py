@@ -46,6 +46,7 @@ def parse_args():
     parser.add_argument("--boot_device", type=str, required=False, default="vda", help="Options: vda, vdaX or initramfs")
     parser.add_argument("--dt_no_virtio_devices", action="store_true", help="Don't patch DT to add virtio device nodes")
     parser.add_argument("--extra_bootargs", type=str, default="", help="Extra kernel command line arguments")
+    parser.add_argument("--hostname_prefix", type=str, default="", help="Set each guest's hostname to <prefix><l2cpu> via systemd.hostname=")
 
     # Only used for initramfs
     parser.add_argument("--rootfs_bin", type=str, required=False, help="Path to initramfs")
@@ -152,6 +153,8 @@ def main():
             exit(1)
         if args.extra_bootargs:
             bootargs += f" {args.extra_bootargs}"
+        if args.hostname_prefix:
+            bootargs += f" systemd.hostname={args.hostname_prefix}{l2cpu}"
         fdt.setprop(chosen_offset, "bootargs", bytes(bootargs, encoding="utf-8") + b'\0')
 
         memory_node = fdt.path_offset("/memory@400030000000", libfdt.QUIET_NOTFOUND)
@@ -171,8 +174,9 @@ def main():
                 fdt.setprop_u32(reserved_memory_offset, "#size-cells", 2)
                 fdt.setprop(reserved_memory_offset, "ranges", b'')
 
-            virtio_reserved_offset = fdt.add_subnode(reserved_memory_offset, "memory@4000afa00000")
-            reserved_reg = struct.pack('>QQ', mem_end - 0x600000, 0x600000)
+            # Reserve all four 2M virtio-mmio slots below mem_end (disk, net, cloud-init, LAN)
+            virtio_reserved_offset = fdt.add_subnode(reserved_memory_offset, f"memory@{mem_end - 0x800000:x}")
+            reserved_reg = struct.pack('>QQ', mem_end - 0x800000, 0x800000)
             fdt.setprop(virtio_reserved_offset, "reg", reserved_reg)
             fdt.setprop(virtio_reserved_offset, "no-map", b'')
 

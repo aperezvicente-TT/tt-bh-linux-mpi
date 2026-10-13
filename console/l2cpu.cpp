@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <sys/mman.h>
 #include <time.h>
+#include <mutex>
+#include <unistd.h>
 #include "l2cpu.h"
 
 /*
@@ -56,28 +58,63 @@ L2CPU::L2CPU(int idx, int card_idx)
     starting_address = l2cpu_starting_address_mapping.at(idx);
     coordinates = l2cpu_tile_mapping.at(idx);
     memory_size = l2cpu_memory_size_mapping.at(idx);
+}
 
-    // Try to map the two 4G memory windows; if either fails, warn and continue
-    // without them instead of crashing.
-    try {
-        memory = reinterpret_cast<uint8_t*>(mmap(nullptr, (2ULL<<32), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-        if (memory == MAP_FAILED) {
-            memory = nullptr;
-            throw std::runtime_error("mmap of 8G L2CPU memory region failed");
-        }
+/*
+The 4G windows onto L2CPU memory are shared process-wide and only those that overlap
+[starting_address, starting_address + memory_size) are mapped. Previously every L2CPU
+object (console, each virtio device) mapped two of the chip's eight 4G windows, so a
+single guest could use six of them and booting more than one L2CPU was impossible.
+With sharing, all four L2CPUs need 2 + 2 + 1 + 2 = 7 windows.
+*/
+namespace {
+struct SharedMemory {
+    int fd = -1;
+    uint8_t *base = nullptr;
+    std::unique_ptr<TlbWindow4G> windows[2];
+};
+std::mutex shared_memory_lock;
+std::map<std::pair<int, int>, SharedMemory> shared_memory;  // (card, idx) -> mapping; lives until exit
+}
 
-        first = std::make_unique<TlbWindow4G>(fd, coordinates.x, coordinates.y, 0x4000'0000'0000ULL, memory, true);
-        second = std::make_unique<TlbWindow4G>(fd, coordinates.x, coordinates.y, 0x4001'0000'0000ULL, memory+(1ULL<<32), true);
-    } catch (const std::exception &e) {
-        // Virtio code errors out later via get_memory_ptr() == nullptr
-        // Unwind anything that did succeed
-        second.reset();
-        first.reset();
-        if (memory != nullptr) {
-            munmap(memory, 2ULL<<32);
-            memory = nullptr;
-        }
+static uint8_t* map_shared_memory(int card_idx, int idx, xy_t coordinates, uint64_t start, uint64_t size) {
+    std::lock_guard<std::mutex> guard(shared_memory_lock);
+    auto key = std::make_pair(card_idx, idx);
+    auto it = shared_memory.find(key);
+    if (it != shared_memory.end()) {
+        return it->second.base;
     }
+
+    SharedMemory m;
+    std::stringstream chardev_string;
+    chardev_string<<"/dev/tenstorrent/"<<card_idx;
+    m.fd = open(chardev_string.str().c_str(), O_RDWR | O_CLOEXEC);
+    if (m.fd < 0) {
+        return nullptr;
+    }
+    m.base = reinterpret_cast<uint8_t*>(mmap(nullptr, (2ULL<<32), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (m.base == MAP_FAILED) {
+        close(m.fd);
+        return nullptr;
+    }
+    try {
+        for (int i = 0; i < 2; i++) {
+            uint64_t window_start = 0x4000'0000'0000ULL + (uint64_t(i) << 32);
+            if (start < window_start + FOUR_GIG && start + size > window_start) {
+                m.windows[i] = std::make_unique<TlbWindow4G>(m.fd, coordinates.x, coordinates.y, window_start, m.base + (uint64_t(i) << 32), true);
+            }
+        }
+    } catch (const std::exception &e) {
+        fprintf(stderr, "L2CPU %d: %s\n", idx, e.what());
+        m.windows[1].reset();
+        m.windows[0].reset();
+        munmap(m.base, 2ULL<<32);
+        close(m.fd);
+        return nullptr;
+    }
+    uint8_t *base = m.base;
+    shared_memory.emplace(key, std::move(m));
+    return base;
 }
 
 uint64_t L2CPU::get_starting_address(){
@@ -118,7 +155,10 @@ std::unique_ptr<TlbWindow2M> L2CPU::get_persistent_2M_tlb_window(uint64_t addr){
 // Returns the starting address of the L2CPU's memory
 uint8_t* L2CPU::get_memory_ptr(){
     if (memory == nullptr) {
-        return nullptr;  // 4G windows were never mapped
+        memory = map_shared_memory(card_idx, idx, coordinates, starting_address, memory_size);
+    }
+    if (memory == nullptr) {
+        return nullptr;  // 4G windows could not be mapped
     }
     return memory+(starting_address-0x4000'0000'0000ULL);
 }
@@ -198,9 +238,6 @@ void L2CPU::set_frequency(){
 
 L2CPU::~L2CPU() noexcept
 {
-    if (memory != nullptr) {
-        munmap(memory, 2ULL<<32);
-    }
     close(fd);
 }
 

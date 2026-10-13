@@ -7,6 +7,7 @@
 #include <iostream> // Added for std::cout, std::cerr
 #include <getopt.h> // Added for getopt_long
 #include <thread> // Added for std::thread
+#include <sys/prctl.h>
 
 #include "console.hpp"
 #include "disk.hpp"
@@ -43,9 +44,9 @@ void disk_main(int ttdevice, int l2cpu, std::mutex& interrupt_register_lock, int
     }
 }
 
-void network_main(int ttdevice, int l2cpu, std::mutex& interrupt_register_lock, int interrupt_number, uint64_t mmio_region_offset){
+void network_main(int ttdevice, int l2cpu, std::mutex& interrupt_register_lock, int interrupt_number, uint64_t mmio_region_offset, const std::string& lan_dir){
     while (!exit_thread_flag){
-        VirtioNet device(ttdevice, l2cpu, exit_thread_flag, interrupt_register_lock, interrupt_number, mmio_region_offset);
+        VirtioNet device(ttdevice, l2cpu, exit_thread_flag, interrupt_register_lock, interrupt_number, mmio_region_offset, lan_dir);
         device.device_setup();
         device.device_loop();
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -53,19 +54,24 @@ void network_main(int ttdevice, int l2cpu, std::mutex& interrupt_register_lock, 
 }
 
 int main(int argc, char **argv){
+    // The virtio loops poll with usleep(1); the default 50 us timer slack turns every idle
+    // poll into ~55 us and caps networking at one frame per sleep.
+    prctl(PR_SET_TIMERSLACK, 1UL);
     int l2cpu=0;
     std::string disk_image_path = "";
     std::string cloud_init_path = "";
     bool enable_network = false;
+    std::string lan_dir = "";
     int ttdevice = 0;
 
-    const char* const short_opts = "t:l:d:c:nh";
+    const char* const short_opts = "t:l:d:c:nL:h";
     const option long_opts[] = {
             {"ttdevice", required_argument, nullptr, 't'},
             {"l2cpu", required_argument, nullptr, 'l'},
             {"disk", required_argument, nullptr, 'd'},
             {"cloud-init", required_argument, nullptr, 'c'},
             {"network", no_argument, nullptr, 'n'},
+            {"lan", required_argument, nullptr, 'L'},
             {"help", no_argument, nullptr, 'h'},
             {nullptr, no_argument, nullptr, 0}
     };
@@ -94,6 +100,9 @@ int main(int argc, char **argv){
         case 'n': // Enable virtio-net networking
             enable_network = true;
             break;
+        case 'L': // Second virtio-net on a LAN shared with other L2CPU guests
+            lan_dir = optarg;
+            break;
         case 'h': // -h or --help
         case '?': // Unrecognized option
         default:
@@ -103,6 +112,7 @@ int main(int argc, char **argv){
             "--disk <path>:         Path to the disk image (enables virtio-blk)\n"
             "--cloud-init <path>:   Path to the cloud-init image (enables virtio-blk for it)\n"
             "--network:             Enable virtio-net networking via slirp\n"
+            "--lan <dir>:           Add a second NIC on a LAN shared with other guests using <dir>\n"
             "--help:                Show help\n";
             exit(1);
         }
@@ -120,10 +130,13 @@ int main(int argc, char **argv){
     threads.emplace_back(disk_main, ttdevice, l2cpu, std::ref(interrupt_register_lock), 33, 2ULL*1024*1024, disk_image_path);
   }
   if (enable_network) {
-    threads.emplace_back(network_main, ttdevice, l2cpu, std::ref(interrupt_register_lock), 32, 4ULL*1024*1024);
+    threads.emplace_back(network_main, ttdevice, l2cpu, std::ref(interrupt_register_lock), 32, 4ULL*1024*1024, std::string());
   }
   if (!cloud_init_path.empty()) {
     threads.emplace_back(disk_main, ttdevice, l2cpu, std::ref(interrupt_register_lock), 31, 6ULL*1024*1024, cloud_init_path);
+  }
+  if (!lan_dir.empty()) {
+    threads.emplace_back(network_main, ttdevice, l2cpu, std::ref(interrupt_register_lock), 30, 8ULL*1024*1024, lan_dir);
   }
   for (auto& thread: threads){
     thread.join();

@@ -1,0 +1,4 @@
+Host bh-x280-* 10.80.0.*
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    LogLevel ERROR

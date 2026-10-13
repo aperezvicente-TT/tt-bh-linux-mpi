@@ -1,0 +1,5 @@
+[Match]
+MACAddress=02:74:74:00:00:03
+
+[Link]
+Name=lan0

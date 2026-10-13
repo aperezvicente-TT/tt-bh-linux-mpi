@@ -6,8 +6,38 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <vector>
+#include <algorithm>
 #include <mutex> // Added for std::mutex
 #include "l2cpu.h"
+
+#include <cstring>
+#include <immintrin.h>
+
+/*
+Copy out of L2CPU memory mapped through a write-combining TLB window. Plain memcpy issues
+8-byte uncached PCIe reads (~67 us per 1514 B frame); 16-byte streaming loads (movntdqa)
+take ~3.7 us. movntdqa needs 16-byte alignment, so the aligned span around src is read
+(touching up to 15 bytes either side, which is harmless for DRAM) and the middle kept.
+*/
+__attribute__((target("sse4.1")))
+inline void copy_from_device(void* dst, const uint8_t* src, size_t n) {
+    uintptr_t start = reinterpret_cast<uintptr_t>(src) & ~uintptr_t(15);
+    uintptr_t end = (reinterpret_cast<uintptr_t>(src) + n + 15) & ~uintptr_t(15);
+    alignas(16) uint8_t bounce[4096];
+    uint8_t* out = static_cast<uint8_t*>(dst);
+    while (start < end) {
+        size_t chunk = std::min<size_t>(end - start, sizeof(bounce));
+        for (size_t i = 0; i < chunk; i += 16) {
+            _mm_store_si128(reinterpret_cast<__m128i*>(bounce + i), _mm_stream_load_si128(reinterpret_cast<__m128i*>(start + i)));
+        }
+        // Portion of [src, src + n) inside this chunk
+        uintptr_t lo = std::max<uintptr_t>(start, reinterpret_cast<uintptr_t>(src));
+        uintptr_t hi = std::min<uintptr_t>(start + chunk, reinterpret_cast<uintptr_t>(src) + n);
+        memcpy(out, bounce + (lo - start), hi - lo);
+        out += hi - lo;
+        start += chunk;
+    }
+}
 
 /*
 Virtual Base Class that implements most of the device-agnostic functionality needed
@@ -304,6 +334,7 @@ public:
             // If any interrupts have been acked by device, unset interrupt on plic
             ack_interrupt();
 
+            bool did_work = false;
             // Process each virtqueue
             for(uint32_t queue_idx=0; queue_idx<num_queues; queue_idx++){
                 struct vring_desc *desc_q = desc[queue_idx];
@@ -318,7 +349,8 @@ public:
                     processed[i] represents the tail of the queue (our point of view)
                     avail_idx represents the head of the queue (driver's point of view)
                     */
-                    if (processed[queue_idx] != avail_idx && queue_has_data(queue_idx)) {
+                    // Drain every descriptor the driver has made available, then interrupt once
+                    while (processed[queue_idx] != avail_idx && queue_has_data(queue_idx)) {
                         should_i_set_interrupt=true;
                         /*
                         avail_q stores a list of descriptors for us to process
@@ -374,6 +406,9 @@ public:
                         used_q->idx = used_idx + 1;
 
                         processed[queue_idx] += 1;
+                        did_work = true;
+                        __sync_synchronize();
+                        avail_idx = avail_q->idx;
                     }
                     if (should_i_set_interrupt){
                         // Set interrupt on plic if we processed at least 1 descriptor
@@ -381,7 +416,9 @@ public:
                     }
                 // }
             }
-            usleep(1);
+            if (!did_work) {
+                usleep(1);
+            }
         }
     }
     virtual ~VirtioDevice() = default;

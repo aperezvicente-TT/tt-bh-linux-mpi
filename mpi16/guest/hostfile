@@ -1,0 +1,5 @@
+# One Linux guest per L2CPU tile, one rank per X280 core
+bh-x280-0 slots=4
+bh-x280-1 slots=4
+bh-x280-2 slots=4
+bh-x280-3 slots=4

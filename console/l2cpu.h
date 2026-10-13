@@ -19,10 +19,10 @@ class L2CPU
     int card_idx;
     uint64_t starting_address, memory_size;
 
-    // ptrs to first (0x4000'0000'0000) and second (0x4001'0000'0000) memory regions of L2CPU memory
-    std::unique_ptr<TlbWindow4G> first, second;
-    // ptr to 8G region that has the above 2 regions stacked together
-    // (nullptr if the first/second window allocation failed)
+    // ptr to 8G region covering 0x4000'0000'0000..0x4002'0000'0000 of L2CPU memory.
+    // Shared by every L2CPU object for the same (card, idx) in this process and
+    // mapped lazily, since Blackhole only has eight 4G TLB windows in total.
+    // (nullptr if the 4G window allocation failed)
     uint8_t *memory = nullptr;
 
     xy_t coordinates;

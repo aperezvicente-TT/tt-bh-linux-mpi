@@ -119,7 +119,7 @@ public:
                 memcpy(addr, mapped_data + ((sector_size * req->sector)), len);
                 break;
             case VIRTIO_BLK_T_OUT:
-                memcpy(mapped_data + ((sector_size * req->sector)), addr, len);
+                copy_from_device(mapped_data + ((sector_size * req->sector)), addr, len);
                 break;
             default:
                 printf("Unimplemented Request Type: %d Len: %lu\n", req->type, len);
